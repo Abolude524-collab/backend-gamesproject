@@ -6,20 +6,27 @@ const { Server } = require("socket.io");
 const app = express();
 app.use(cors());
 
+// Create HTTP server and attach Socket.io
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:3000", // your frontend
+    origin: "*", // Change to your frontend domain in production
     methods: ["GET", "POST"]
   }
 });
 
+// Health check root route
+app.get('/', (req, res) => {
+  res.send('🎉 Backend with Socket.io is working!');
+});
+
+// In-memory room data
 const rooms = {}; // { roomId: { players: [ { id, symbol } ], board: [], isXTurn, gameOver } }
 
 const checkWinner = (board) => {
   const lines = [
     [0,1,2],[3,4,5],[6,7,8], // rows
-    [0,3,6],[1,4,7],[2,5,8], // cols
+    [0,3,6],[1,4,7],[2,5,8], // columns
     [0,4,8],[2,4,6]          // diagonals
   ];
   for (const [a,b,c] of lines) {
@@ -72,8 +79,8 @@ io.on("connection", (socket) => {
 
     const currentSymbol = room.isXTurn ? "X" : "O";
 
-    if (player.symbol !== currentSymbol) return; // Not this player's turn
-    if (room.board[index] !== null) return;      // Already occupied
+    if (player.symbol !== currentSymbol) return;
+    if (room.board[index] !== null) return;
 
     room.board[index] = currentSymbol;
     const result = checkWinner(room.board);
@@ -129,8 +136,8 @@ io.on("connection", (socket) => {
   });
 });
 
+// ✅ Socket.io-compatible listener
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
