@@ -1,143 +1,149 @@
 const express = require("express");
 const http = require("http");
-const cors = require("cors");
 const { Server } = require("socket.io");
+const cors = require("cors");
 
 const app = express();
 app.use(cors());
 
-// Create HTTP server and attach Socket.io
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*", // Change to your frontend domain in production
-    methods: ["GET", "POST"]
-  }
+    origin: "https://armourgames.netlify.app", // Adjust in production
+    methods: ["GET", "POST"],
+  },
 });
 
-// Health check root route
-app.get('/', (req, res) => {
-  res.send('🎉 Backend with Socket.io is working!');
+
+app.get("/", (req, res) => {
+  res.send("🎉 Backend with Socket.io is working!");
 });
 
-// In-memory room data
-const rooms = {}; // { roomId: { players: [ { id, symbol } ], board: [], isXTurn, gameOver } }
+// Game rooms and states
+const rooms = {};
 
 const checkWinner = (board) => {
   const lines = [
-    [0,1,2],[3,4,5],[6,7,8], // rows
-    [0,3,6],[1,4,7],[2,5,8], // columns
-    [0,4,8],[2,4,6]          // diagonals
+    [0, 1, 2],
+    [3, 4, 5],
+    [6, 7, 8],
+
+    [0, 3, 6],
+    [1, 4, 7],
+    [2, 5, 8],
+
+    [0, 4, 8],
+    [2, 4, 6],
   ];
-  for (const [a,b,c] of lines) {
+  for (let [a, b, c] of lines) {
     if (board[a] && board[a] === board[b] && board[a] === board[c]) {
-      return board[a]; // "X" or "O"
+      return board[a];
     }
   }
-  return board.includes(null) ? null : "draw";
+  if (board.every((cell) => cell !== null)) return "draw";
+  return null;
 };
 
 io.on("connection", (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log("User connected:", socket.id);
 
-  socket.on("joinRoom", (roomId) => {
-    if (!rooms[roomId]) {
-      rooms[roomId] = {
+  socket.on("joinRoom", ({ room, name }) => {
+    socket.join(room);
+
+    // Initialize room if not exist
+    if (!rooms[room]) {
+      rooms[room] = {
         players: [],
         board: Array(9).fill(null),
-        isXTurn: true,
-        gameOver: false
+        turn: "X",
+        sockets: {},
+        names: {},
       };
     }
 
-    const room = rooms[roomId];
+    const roomData = rooms[room];
 
-    if (room.players.length < 2) {
-      const symbol = room.players.length === 0 ? "X" : "O";
-      room.players.push({ id: socket.id, symbol });
-      socket.join(roomId);
-      socket.emit("assignSymbol", symbol);
-      console.log(`Player ${symbol} joined room ${roomId}`);
-
-      if (room.players.length === 2) {
-        io.to(roomId).emit("startGame", {
-          board: room.board,
-          isXTurn: room.isXTurn
-        });
-      }
-    } else {
-      socket.emit("roomFull");
+    // Only allow 2 players
+    if (roomData.players.length >= 2) {
+      socket.emit("message", "Room is full.");
+      return;
     }
-  });
 
-  socket.on("makeMove", ({ room: roomId, index }) => {
-    const room = rooms[roomId];
-    if (!room || room.gameOver) return;
+    const symbol = roomData.players.includes("X") ? "O" : "X";
+    roomData.players.push(symbol);
+    roomData.sockets[symbol] = socket.id;
+    roomData.names[symbol] = name;
 
-    const player = room.players.find(p => p.id === socket.id);
-    if (!player) return;
+    // Send symbol to client
+    socket.emit("symbol", { symbol });
 
-    const currentSymbol = room.isXTurn ? "X" : "O";
-
-    if (player.symbol !== currentSymbol) return;
-    if (room.board[index] !== null) return;
-
-    room.board[index] = currentSymbol;
-    const result = checkWinner(room.board);
-
-    if (result === "X" || result === "O") {
-      room.gameOver = true;
-      io.to(roomId).emit("updateGame", {
-        board: room.board,
-        isXTurn: room.isXTurn,
-        winner: result
-      });
-    } else if (result === "draw") {
-      room.gameOver = true;
-      io.to(roomId).emit("updateGame", {
-        board: room.board,
-        isXTurn: room.isXTurn,
-        winner: "draw"
-      });
-    } else {
-      room.isXTurn = !room.isXTurn;
-      io.to(roomId).emit("updateGame", {
-        board: room.board,
-        isXTurn: room.isXTurn
+    // Notify both players if ready
+    if (roomData.players.length === 2) {
+      io.to(room).emit("startGame", {
+        playerNames: roomData.names,
+        currentTurn: roomData.turn,
+        board: roomData.board,
       });
     }
   });
 
-  socket.on("restartGame", (roomId) => {
-    const room = rooms[roomId];
-    if (!room) return;
+  socket.on("move", ({ room, index }) => {
+    const game = rooms[room];
+    if (!game || game.board[index]) return;
 
-    room.board = Array(9).fill(null);
-    room.isXTurn = true;
-    room.gameOver = false;
+    const currentTurn = game.turn;
+    game.board[index] = currentTurn;
+    const winner = checkWinner(game.board);
 
-    io.to(roomId).emit("startGame", {
-      board: room.board,
-      isXTurn: room.isXTurn
-    });
+    if (winner) {
+      io.to(room).emit("update", {
+        board: game.board,
+        turn: game.turn,
+      });
+      io.to(room).emit("end", { winner });
+    } else {
+      game.turn = currentTurn === "X" ? "O" : "X";
+      io.to(room).emit("update", {
+        board: game.board,
+        turn: game.turn,
+      });
+    }
+  });
+
+  socket.on("reset", (room) => {
+    if (rooms[room]) {
+      rooms[room].board = Array(9).fill(null);
+      rooms[room].turn = "X";
+      io.to(room).emit("update", {
+        board: rooms[room].board,
+        turn: rooms[room].turn,
+      });
+    }
   });
 
   socket.on("disconnect", () => {
-    console.log(`User disconnected: ${socket.id}`);
-    for (const roomId in rooms) {
-      const room = rooms[roomId];
-      room.players = room.players.filter(p => p.id !== socket.id);
-      if (room.players.length === 0) {
-        delete rooms[roomId];
-      } else {
-        io.to(roomId).emit("opponentLeft");
+    console.log("User disconnected:", socket.id);
+
+    // Clean up player from any room
+    for (const room in rooms) {
+      const game = rooms[room];
+      const symbol = Object.keys(game.sockets).find(
+        (key) => game.sockets[key] === socket.id
+      );
+
+      if (symbol) {
+        delete game.sockets[symbol];
+        delete game.names[symbol];
+        game.players = game.players.filter((s) => s !== symbol);
+
+        io.to(room).emit("message", "A player disconnected. Game ended.");
+        delete rooms[room]; // Reset room state entirely
       }
     }
   });
 });
 
-// ✅ Socket.io-compatible listener
-const PORT = process.env.PORT || 4000;
+const PORT = 4000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Tic Tac Toe server listening on port ${PORT}`);
 });
